@@ -8,9 +8,9 @@ Agente de onboarding para 30X. Responde preguntas sobre los 3 documentos interno
 # 1. Instalar dependencias
 uv sync
 
-# 2. Configurar credenciales
+# 2. Configurar credenciales y Postgres
 cp .env.example .env
-# Editar .env y elegir el proveedor LLM
+# Editar .env, elegir el proveedor LLM y setear DATABASE_URL
 
 # 3. Levantar el servidor
 uv run uvicorn app.main:app --reload
@@ -73,6 +73,7 @@ Para verificar el endpoint sin llamar a una API real, configura `LLM_PROVIDER=fa
 LLM_PROVIDER=fake
 LLM_MODEL=fake
 LLM_API_KEY=
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/onboarding_agent
 ```
 
 ```bash
@@ -88,14 +89,24 @@ curl -X POST http://localhost:8000/chat \
 
 La respuesta del `FakeProvider` incluye un eco de la pregunta y una cita fija del Doc1. Puedes hacer multiples requests con el mismo `session_id` para verificar que el historial persiste entre turnos.
 
-## Como actualizar la Knowledge Base
+## Knowledge Base por UI
 
-La KB vive en `kb/*.md`. Para actualizar:
+El backend permite cargar documentos desde la interfaz grafica. Cada upload:
 
-1. Editar o reemplazar el `.md` correspondiente en `kb/`.
-2. No hace falta reiniciar: el loader detecta el cambio de `mtime` y recarga en la proxima query.
+1. Guarda el archivo original en `KB_UPLOAD_DIR`.
+2. Convierte el contenido a Markdown.
+3. Guarda el Markdown en `KB_DIR`, que es lo que el chat agrega a la ventana de contexto.
+4. Registra metadata y referencias de ambos archivos en Postgres usando SQLAlchemy.
 
-Los PDFs originales estan archivados en `kb/_archive/`.
+Si se elimina un documento con la API, se borra el archivo original, el Markdown generado y el registro de Postgres.
+
+Solo se aceptan PDFs de hasta 10 MB. El conversor intenta detectar tablas y volcarlas como tablas Markdown para que el modelo preserve mejor esa estructura en contexto.
+
+Para crear las tablas manualmente antes de levantar la API:
+
+```bash
+uv run python -c "from app.db import init_db; init_db(); print('DB migrated')"
+```
 
 ## Variables de entorno
 
@@ -107,6 +118,10 @@ Los PDFs originales estan archivados en `kb/_archive/`.
 | `OPENAI_API_KEY` | _(vacio)_ | API key para OpenAI |
 | `ANTHROPIC_API_KEY` | _(vacio)_ | API key para Anthropic |
 | `LLM_BASE_URL` | _(vacio)_ | Base URL opcional para proveedores OpenAI-compatible |
+| `DATABASE_URL` | _(vacio)_ | URL de Postgres para metadata de documentos KB |
+| `KB_DIR` | `kb` | Directorio donde se escriben los Markdown que entran al contexto |
+| `KB_UPLOAD_DIR` | `kb/_uploads` | Directorio donde se guardan los archivos originales subidos |
+| `KB_MAX_UPLOAD_MB` | `10` | Tamano maximo por PDF subido |
 
 ## API
 
@@ -133,6 +148,40 @@ Los PDFs originales estan archivados en `kb/_archive/`.
 ```json
 { "ok": true }
 ```
+
+### `GET /kb/documents`
+
+Lista documentos subidos por la UI.
+
+```json
+[
+  {
+    "id": "6f6fd703-53de-48fd-af7b-36fd549daef2",
+    "original_filename": "manual.pdf",
+    "stored_filename": "manual-6f6fd703.pdf",
+    "content_type": "application/pdf",
+    "size_bytes": 123456,
+    "sha256": "...",
+    "pdf_path": "kb/_uploads/manual-6f6fd703.pdf",
+    "markdown_path": "kb/manual-6f6fd703.md",
+    "status": "ready",
+    "error": null
+  }
+]
+```
+
+### `POST /kb/documents`
+
+Sube un archivo multipart con campo `file`.
+
+```bash
+curl -X POST http://localhost:8000/kb/documents \
+  -F "file=@manual.pdf"
+```
+
+### `DELETE /kb/documents/{document_id}`
+
+Elimina metadata, archivo original y Markdown generado. Devuelve `204 No Content`.
 
 ## FAQ de evaluacion
 

@@ -5,6 +5,10 @@ from app.config import settings
 _cache: dict[str, tuple[float, str]] = {}
 
 
+def clear_cache_for(path) -> None:
+    _cache.pop(str(path), None)
+
+
 def load_kb() -> str:
     kb_dir = settings.kb_dir
     files = sorted(

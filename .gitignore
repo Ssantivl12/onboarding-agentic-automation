@@ -23,6 +23,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Runtime knowledge-base uploads
+be-onboarding-agentic-automation/kb/*.md
+be-onboarding-agentic-automation/kb/_uploads/
+
 # OS / editor local state
 .DS_Store
 Thumbs.db
