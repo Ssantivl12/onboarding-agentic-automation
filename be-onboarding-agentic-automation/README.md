@@ -1,194 +1,117 @@
-# 30X Onboarding Agent - Backend
+# 30X Onboarding Agent - Backend RAG
 
-Agente de onboarding para 30X. Responde preguntas sobre los 3 documentos internos con fidelidad al corpus: responde solo lo que esta en los docs, se abstiene cuando algo no esta y escala al humano correcto.
+Backend FastAPI para un agente de onboarding 100% RAG. Los PDFs se suben por API/UI, se convierten a Markdown, se dividen en chunks estructurales, se indexan con embeddings OpenAI en Postgres + pgvector y el chat responde solo desde los chunks recuperados.
 
 ## Como correr
 
 ```bash
-# 1. Instalar dependencias
 uv sync
-
-# 2. Configurar credenciales y Postgres
 cp .env.example .env
-# Editar .env, elegir el proveedor LLM y setear DATABASE_URL
+```
 
-# 3. Levantar el servidor
+Configura `.env`:
+
+```bash
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/onboarding_agent
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-5.4-nano
+OPENAI_API_KEY=sk-...
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIMENSIONS=1536
+```
+
+La base debe ser Postgres con pgvector disponible. El backend intenta crear `CREATE EXTENSION IF NOT EXISTS vector` al arrancar y falla de forma explicita si no puede.
+
+```bash
 uv run uvicorn app.main:app --reload
 ```
 
 El servidor queda en `http://localhost:8000`.
 
-## Proveedores LLM
+## Flujo RAG
 
-El backend es agnostico al proveedor desde la capa de orquestacion: `OnboardingAgent` depende de la interfaz `LLMProvider`, y `LLM_PROVIDER` decide que implementacion se usa al arrancar.
+1. `POST /kb/documents` recibe un PDF.
+2. El PDF se guarda en `KB_UPLOAD_DIR`.
+3. Se convierte a Markdown con PyMuPDF, preservando tablas detectables como Markdown.
+4. El Markdown se divide por estructura de headings y bloques de tabla.
+5. Cada chunk se embebe con OpenAI embeddings.
+6. Documento, chunks y embeddings quedan persistidos en Postgres.
+7. `POST /chat` reformula la consulta con historial, recupera chunks por busqueda hibrida, valida answerability y genera una respuesta usando solo el contexto recuperado.
 
-Opciones soportadas:
-
-| `LLM_PROVIDER` | API | Key |
-|---|---|---|
-| `openai` | OpenAI Responses API | `OPENAI_API_KEY` o `LLM_API_KEY` |
-| `claude` / `anthropic` | Anthropic Messages API | `ANTHROPIC_API_KEY` o `LLM_API_KEY` |
-| `openai-compatible` | Endpoint compatible con `/v1/chat/completions` | `LLM_API_KEY` |
-| `fake` | Testing local sin API real | No requiere key |
-
-Ejemplo con OpenAI:
-
-```bash
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-5.4-nano
-OPENAI_API_KEY=sk-...
-```
-
-Ejemplo con Anthropic:
-
-```bash
-LLM_PROVIDER=anthropic
-LLM_MODEL=claude-sonnet-4-6
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Ejemplo con un proveedor OpenAI-compatible:
-
-```bash
-LLM_PROVIDER=openai-compatible
-LLM_MODEL=provider-model-name
-LLM_API_KEY=...
-LLM_BASE_URL=https://api.provider.com/v1
-```
-
-Para agregar otro proveedor, crear una clase que implemente:
-
-```python
-class LLMProvider(Protocol):
-    def generate(self, system: str, messages: list[Message]) -> str: ...
-```
-
-y registrarla en `src/app/llm/factory.py`.
-
-## Probar sin API key
-
-Para verificar el endpoint sin llamar a una API real, configura `LLM_PROVIDER=fake` en `.env`:
-
-```bash
-LLM_PROVIDER=fake
-LLM_MODEL=fake
-LLM_API_KEY=
-DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/onboarding_agent
-```
-
-```bash
-# Verificar health
-curl http://localhost:8000/health
-# {"ok": true}
-
-# Probar chat
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Que es 30X?", "session_id": "test-1"}'
-```
-
-La respuesta del `FakeProvider` incluye un eco de la pregunta y una cita fija del Doc1. Puedes hacer multiples requests con el mismo `session_id` para verificar que el historial persiste entre turnos.
-
-## Knowledge Base por UI
-
-El backend permite cargar documentos desde la interfaz grafica. Cada upload:
-
-1. Guarda el archivo original en `KB_UPLOAD_DIR`.
-2. Convierte el contenido a Markdown.
-3. Guarda el Markdown en `KB_DIR`, que es lo que el chat agrega a la ventana de contexto.
-4. Registra metadata y referencias de ambos archivos en Postgres usando SQLAlchemy.
-
-Si se elimina un documento con la API, se borra el archivo original, el Markdown generado y el registro de Postgres.
-
-Solo se aceptan PDFs de hasta 10 MB. El conversor intenta detectar tablas y volcarlas como tablas Markdown para que el modelo preserve mejor esa estructura en contexto.
-
-Para crear las tablas manualmente antes de levantar la API:
-
-```bash
-uv run python -c "from app.db import init_db; init_db(); print('DB migrated')"
-```
-
-## Variables de entorno
+## Variables principales
 
 | Variable | Default | Descripcion |
 |---|---|---|
-| `LLM_PROVIDER` | `openai` | `openai`, `claude`/`anthropic`, `openai-compatible` o `fake` |
-| `LLM_MODEL` | `gpt-5.4-nano` | Modelo del proveedor elegido |
-| `LLM_API_KEY` | _(vacio)_ | API key generica usada si no hay key especifica |
-| `OPENAI_API_KEY` | _(vacio)_ | API key para OpenAI |
-| `ANTHROPIC_API_KEY` | _(vacio)_ | API key para Anthropic |
-| `LLM_BASE_URL` | _(vacio)_ | Base URL opcional para proveedores OpenAI-compatible |
-| `DATABASE_URL` | _(vacio)_ | URL de Postgres para metadata de documentos KB |
-| `KB_DIR` | `kb` | Directorio donde se escriben los Markdown que entran al contexto |
-| `KB_UPLOAD_DIR` | `kb/_uploads` | Directorio donde se guardan los archivos originales subidos |
-| `KB_MAX_UPLOAD_MB` | `10` | Tamano maximo por PDF subido |
+| `DATABASE_URL` | _(vacio)_ | Postgres con pgvector. Requerido. |
+| `LLM_PROVIDER` | `openai` | `openai`, `claude`/`anthropic`, `openai-compatible` o `fake`. |
+| `LLM_MODEL` | `gpt-5.4-nano` | Modelo generativo para chat, answerability y query rewrite. |
+| `OPENAI_API_KEY` | _(vacio)_ | API key para OpenAI y embeddings. |
+| `LLM_API_KEY` | _(vacio)_ | Key generica de fallback. |
+| `EMBEDDING_PROVIDER` | `openai` | Solo `openai` en este prototipo. |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | Modelo de embeddings. |
+| `EMBEDDING_DIMENSIONS` | `1536` | Dimension del vector persistido. |
+| `RAG_TOP_K` | `5` | Chunks finales enviados al modelo. |
+| `RAG_CANDIDATES` | `20` | Candidatos por retriever antes de fusionar. |
+| `RAG_MIN_VECTOR_SCORE` | `0.2` | Filtro minimo para resultados vectoriales. |
+| `RAG_ENABLE_ANSWERABILITY` | `true` | Activa compuerta LLM antes de generar. |
 
 ## API
+
+### `POST /kb/documents`
+
+Sube un PDF, lo convierte e indexa de forma sincronica.
+
+```bash
+curl -X POST http://localhost:8000/kb/documents \
+  -F "file=@30X_Doc1_Organizacion.pdf"
+```
+
+### `GET /kb/documents`
+
+Lista PDFs cargados.
+
+### `DELETE /kb/documents/{document_id}`
+
+Elimina metadata, chunks, PDF y Markdown.
+
+### `POST /rag/search`
+
+Endpoint de debugging para inspeccionar retrieval.
+
+```bash
+curl -X POST http://localhost:8000/rag/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Make automatizaciones", "top_k": 5}'
+```
 
 ### `POST /chat`
 
 ```json
-// Request
-{ "message": "Como funciona el onboarding?", "session_id": "abc-123" }
+{
+  "message": "Que herramientas usan para automatizaciones?",
+  "session_id": "abc-123"
+}
+```
 
-// Response
+Respuesta:
+
+```json
 {
   "reply": "Segun los documentos...",
-  "source": "03_equipo_herramientas.md - Tu primera semana en 30X",
+  "source": "30X_Doc3_Equipo_Herramientas.pdf - Stack de herramientas",
   "escalated_to": null,
   "session_id": "abc-123"
 }
 ```
 
-- `source`: seccion del doc de origen, parseada del tag `<source>` en la respuesta del modelo.
-- `escalated_to`: rol al que escalar si aplica, parseado de `<escalated_to>`.
+## Pruebas manuales recomendadas
 
-### `GET /health`
-
-```json
-{ "ok": true }
-```
-
-### `GET /kb/documents`
-
-Lista documentos subidos por la UI.
-
-```json
-[
-  {
-    "id": "6f6fd703-53de-48fd-af7b-36fd549daef2",
-    "original_filename": "manual.pdf",
-    "stored_filename": "manual-6f6fd703.pdf",
-    "content_type": "application/pdf",
-    "size_bytes": 123456,
-    "sha256": "...",
-    "pdf_path": "kb/_uploads/manual-6f6fd703.pdf",
-    "markdown_path": "kb/manual-6f6fd703.md",
-    "status": "ready",
-    "error": null
-  }
-]
-```
-
-### `POST /kb/documents`
-
-Sube un archivo multipart con campo `file`.
-
-```bash
-curl -X POST http://localhost:8000/kb/documents \
-  -F "file=@manual.pdf"
-```
-
-### `DELETE /kb/documents/{document_id}`
-
-Elimina metadata, archivo original y Markdown generado. Devuelve `204 No Content`.
-
-## FAQ de evaluacion
-
-Checklist para correr con un proveedor real:
-
-1. **Que es 30X?** -> Descripcion + fundadores desde `01_organizacion.md`
-2. **Cuales son los programas disponibles?** -> Tabla completa desde `02_programas_operacion.md`
-3. **Con quien hablo si tengo un bloqueo tecnico?** -> Chief of Staff + gap marcado
-4. **Como pido acceso a una herramienta?** -> Escalado a lider de area (`03_equipo_herramientas.md`)
-5. **Cual es el NPS objetivo post-programa?** -> > 60 (`02_programas_operacion.md - Metricas`)
+1. Subir los PDFs de onboarding desde la UI o `POST /kb/documents`.
+2. Probar `/rag/search` con: `Make`, `Chief of Staff`, `NPS objetivo`, `HubSpot`.
+3. Probar `/chat`:
+   - `Que es 30X?`
+   - `Que herramientas usan para automatizaciones?`
+   - `Con quien hablo si tengo un bloqueo tecnico?`
+   - `Cual es la politica de vacaciones?`
+4. Confirmar que preguntas fuera del corpus se abstienen y escalan sin inventar.
