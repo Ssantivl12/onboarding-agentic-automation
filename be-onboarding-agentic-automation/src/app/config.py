@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     kb_upload_dir: Path | None = None
     kb_max_upload_mb: int = 10
     database_url: str = ""
+    embedding_provider: str = "openai"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+    rag_top_k: int = 5
+    rag_candidates: int = 20
+    rag_min_vector_score: float = 0.2
+    rag_enable_answerability: bool = True
 
     @property
     def resolved_kb_upload_dir(self) -> Path:
