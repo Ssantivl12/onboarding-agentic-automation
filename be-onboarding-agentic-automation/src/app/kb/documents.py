@@ -7,9 +7,10 @@ from pathlib import Path
 from sqlalchemy import desc, select
 
 from app.config import settings
-from app.db import KnowledgeBaseDocument, session_scope
+from app.db import KnowledgeBaseChunk, KnowledgeBaseDocument, session_scope
 from app.kb.converter import convert_to_markdown
-from app.kb.loader import clear_cache_for
+from app.rag.chunker import chunk_markdown
+from app.rag.embeddings import get_embedder
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,11 @@ def create_document(
         markdown = convert_to_markdown(source_path, original_filename, content_type)
         markdown_path.write_text(markdown, encoding="utf-8")
         sha256 = hashlib.sha256(content).hexdigest()
+        chunks = chunk_markdown(markdown)
+        if not chunks:
+            raise ValueError("The PDF did not produce indexable Markdown chunks.")
+
+        embeddings = get_embedder().embed_documents([chunk.content for chunk in chunks])
 
         document = StoredKnowledgeBaseDocument(
             id=doc_id,
@@ -75,7 +81,7 @@ def create_document(
             pdf_path=source_path,
             markdown_path=markdown_path,
         )
-        _insert_document(document)
+        _insert_document(document, chunks, embeddings)
         return document
     except Exception:
         _unlink_if_exists(source_path)
@@ -95,11 +101,10 @@ def delete_document(document_id: uuid.UUID) -> bool:
 
     _unlink_if_exists(pdf_path)
     _unlink_if_exists(markdown_path)
-    clear_cache_for(markdown_path)
     return True
 
 
-def _insert_document(document: StoredKnowledgeBaseDocument) -> None:
+def _insert_document(document: StoredKnowledgeBaseDocument, chunks, embeddings: list[list[float]]) -> None:
     with session_scope() as session:
         session.add(
             KnowledgeBaseDocument(
@@ -114,6 +119,18 @@ def _insert_document(document: StoredKnowledgeBaseDocument) -> None:
                 status="ready",
             )
         )
+        for chunk, embedding in zip(chunks, embeddings, strict=True):
+            session.add(
+                KnowledgeBaseChunk(
+                    id=uuid.uuid4(),
+                    document_id=document.id,
+                    chunk_index=chunk.chunk_index,
+                    section_title=chunk.section_title,
+                    content=chunk.content,
+                    token_count=chunk.token_count,
+                    embedding=embedding,
+                )
+            )
 
 
 def _safe_filename(filename: str) -> str:
