@@ -1,4 +1,4 @@
-# 30X Onboarding Agent
+# Onboarding Agent
 
 Monorepo para un prototipo de agente de onboarding con frontend web y backend FastAPI. La aplicacion permite cargar PDFs de la knowledge base, convertirlos a Markdown y conversar con un asistente que usa esos documentos completos como contexto.
 
